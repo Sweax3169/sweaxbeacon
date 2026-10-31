@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+
+# build output (the renderer build and the installer are produced by `npm run dist`)
+dist/
+release/
+out/
+
+# logs and local debug files
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.vite/
+
+# local settings, editors, OS files
+.env
+.env.*
+sweaxpanel-settings.json
+.claude/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# large binaries never belong in git (installers go to GitHub Releases)
+*.exe
+*.blockmap
+*.msi
+*.zip
+*.7z
+*.asar
+*.mp4.tmp
