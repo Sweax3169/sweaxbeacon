@@ -1,112 +1,149 @@
 'use strict'
 
-// SWEAXPANEL ana süreç — Sweax Studios
-// RCON bağlantısını main process'te yönetir, renderer'a IPC ile açar.
+// SweaxBeacon main process.
+//
+// Finds every Minecraft world it can reach on this PC (sessions.cjs keeps the
+// list fresh), picks one, and keeps one link open to it: RCON for a server,
+// the game's chat for single-player, LAN and servers where the player is an
+// operator. The window only asks for something when nothing else can work.
 
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, nativeTheme } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { Rcon } = require('./rcon.cjs')
+const { Sessions } = require('./sessions.cjs')
+const helper = require('./sys/helper.cjs')
+const { itemNames } = require('./mc/names.cjs')
 
 let win = null
-let rcon = null
-let rconInfo = null // { host, port }
+let sessions = null
 
-const settingsFile = () => path.join(app.getPath('userData'), 'sweaxpanel-settings.json')
+// ------------------------------------------------------------------ settings
+
+const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
 
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) } catch (e) { return {} }
 }
-function saveSettings(s) {
-  try { fs.writeFileSync(settingsFile(), JSON.stringify(s || {}, null, 2), 'utf8'); return true } catch (e) { return false }
+
+let settings = {}
+let saveTimer = null
+function saveSettings() {
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    try {
+      fs.mkdirSync(path.dirname(settingsFile()), { recursive: true })
+      fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2), 'utf8')
+    } catch (e) { /* read-only profile */ }
+  }, 200)
 }
+
+// Passwords of remote servers are kept encrypted for this Windows account.
+const secret = {
+  seal: (text) => {
+    try { if (safeStorage.isEncryptionAvailable()) return 'dpapi:' + safeStorage.encryptString(text).toString('base64') } catch (e) { /* fall through */ }
+    return 'plain:' + Buffer.from(text, 'utf8').toString('base64')
+  },
+  open: (sealed) => {
+    if (!sealed) return ''
+    try {
+      if (sealed.startsWith('dpapi:')) return safeStorage.decryptString(Buffer.from(sealed.slice(6), 'base64'))
+      if (sealed.startsWith('plain:')) return Buffer.from(sealed.slice(6), 'base64').toString('utf8')
+    } catch (e) { /* another account */ }
+    return ''
+  },
+}
+
+// ------------------------------------------------------------------ window
+
+const BG = { obsidian: '#0C0A10', quartz: '#ECE8E1' }
+// SWEAXBEACON_DEMO=chat|server|none opens the interface on its built-in demo
+// worlds instead of the real ones (tools/media/capture.cjs records it that way).
+const DEMO = process.env.SWEAXBEACON_DEMO || ''
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1360,
-    height: 880,
-    minWidth: 1060,
-    minHeight: 680,
+    width: 1320,
+    height: 860,
+    minWidth: 1080,
+    minHeight: 700,
     frame: false,
     show: false,
-    backgroundColor: '#0f0a18',
-    title: 'SweaxPanel',
+    backgroundColor: BG[settings.theme] || BG.obsidian,
+    title: 'SweaxBeacon',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: DEMO ? undefined : path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
   })
   win.once('ready-to-show', () => win.show())
-  if (process.env.SWEAXPANEL_DEV_URL) win.loadURL(process.env.SWEAXPANEL_DEV_URL)
-  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+  win.on('maximize', () => send('window', { maximized: true }))
+  win.on('unmaximize', () => send('window', { maximized: false }))
+  if (process.env.SWEAXBEACON_DEV_URL) win.loadURL(process.env.SWEAXBEACON_DEV_URL)
+  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), DEMO ? { query: { demo: DEMO, theme: process.env.SWEAXBEACON_THEME || 'obsidian' } } : undefined)
 }
 
-function safeSend(channel, data) {
-  try { if (win && !win.webContents.isDestroyed()) win.webContents.send(channel, data) } catch (e) { /* kapandı */ }
+function send(channel, data) {
+  try { if (win && !win.webContents.isDestroyed()) win.webContents.send(channel, data) } catch (e) { /* closing */ }
 }
 
-// ---------------------------------------------------------------- RCON IPC
+// ------------------------------------------------------------------ IPC
 
-const RCON_ERR = {
-  refused: 'Sunucuya ulaşılamadı — sunucu kapalı ya da RCON portu yanlış olabilir.',
-  timeout: 'Bağlantı zaman aşımına uğradı — adres/port doğru mu, güvenlik duvarı engelliyor mu?',
-  host: 'Sunucu adresi bulunamadı — adresi kontrol et.',
-  auth: 'RCON şifresi yanlış.',
-  reset: 'Bağlantı sunucu tarafından kapatıldı — RCON açık mı?',
-  notconnected: 'Bağlantı yok.',
-  closed: 'Bağlantı kapandı.',
-}
-function turkceRcon(msg) {
-  return RCON_ERR[msg] || ('Beklenmeyen bağlantı hatası: ' + msg)
+function publicSettings() {
+  return {
+    theme: settings.theme || 'obsidian',
+    waypoints: settings.waypoints || {},
+    systemDark: nativeTheme.shouldUseDarkColors,
+  }
 }
 
-ipcMain.handle('rcon:connect', async (e, { host, port, password }) => {
-  try {
-    if (rcon) { rcon.destroy(); rcon = null }
-    const c = new Rcon()
-    c.onClose = () => { if (rcon === c) { rcon = null; rconInfo = null; safeSend('rcon:closed', {}) } }
-    await c.connect(host, Number(port) || 25575, password || '', 8000)
-    rcon = c
-    rconInfo = { host, port: Number(port) || 25575 }
+function wire() {
+  const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
+    try { return await fn(...args) } catch (err) { return { ok: false, error: err.code || err.message || String(err) } }
+  })
+
+  handle('app:get', () => ({ version: app.getVersion(), settings: publicSettings(), ...sessions.view() }))
+  handle('target:select', (key) => sessions.select(key, { manual: true }))
+  handle('target:rescan', () => sessions.rescan({ disk: true }))
+  handle('target:enableRcon', (key) => sessions.enableRcon(key))
+  handle('target:start', (key) => sessions.start(key))
+  handle('target:acceptEula', (key) => sessions.acceptEula(key))
+  handle('target:openFolder', (key) => {
+    const t = sessions.find(key)
+    if (t && (t.dir || t.gameDir)) shell.openPath(t.dir || t.gameDir)
     return { ok: true }
-  } catch (err) {
-    return { ok: false, message: turkceRcon(String(err && err.message)) }
-  }
-})
+  })
+  handle('target:addFolder', async () => {
+    const r = await dialog.showOpenDialog(win, { title: 'Sunucu klasörünü seç', properties: ['openDirectory'] })
+    if (r.canceled || !r.filePaths[0]) return { ok: false, error: 'canceled' }
+    return sessions.addFolder(r.filePaths[0])
+  })
+  handle('target:addRemote', (r) => sessions.addRemote(r))
+  handle('target:forget', (key) => sessions.forget(key))
+  let names = null
+  handle('items:names', () => names || (names = itemNames({ games: [...sessions.games.values()] })))
+  handle('run', (cmds) => sessions.run(cmds))
+  handle('query', (cmd) => sessions.query(cmd))
+  handle('settings:set', (patch) => {
+    for (const k of ['theme', 'waypoints']) if (k in patch) settings[k] = patch[k]
+    saveSettings()
+    if ('theme' in patch && win) win.setBackgroundColor(BG[patch.theme] || BG.obsidian)
+    return publicSettings()
+  })
+  handle('open:external', (url) => {
+    if (/^https:\/\/(www\.)?(minecraft\.net|aka\.ms|github\.com|sweax3169\.github\.io)\//.test(String(url))) shell.openExternal(url)
+    return { ok: true }
+  })
+  ipcMain.on('window:control', (e, action) => {
+    if (!win) return
+    if (action === 'minimize') win.minimize()
+    else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize()
+    else if (action === 'close') win.close()
+  })
+}
 
-ipcMain.handle('rcon:command', async (e, cmd) => {
-  if (!rcon || !rcon.connected) return { ok: false, message: 'Bağlantı yok.' }
-  try {
-    const response = await rcon.command(String(cmd))
-    return { ok: true, response }
-  } catch (err) {
-    return { ok: false, message: turkceRcon(String(err && err.message)) }
-  }
-})
-
-ipcMain.handle('rcon:disconnect', async () => {
-  if (rcon) { rcon.destroy(); rcon = null; rconInfo = null }
-  return { ok: true }
-})
-
-ipcMain.handle('rcon:status', async () => ({
-  connected: !!(rcon && rcon.connected),
-  info: rconInfo,
-}))
-
-ipcMain.handle('settings:get', () => loadSettings())
-ipcMain.handle('settings:set', (e, s) => saveSettings(s))
-
-ipcMain.on('window:control', (e, action) => {
-  if (!win) return
-  if (action === 'minimize') win.minimize()
-  else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize()
-  else if (action === 'close') win.close()
-})
-
-// ---------------------------------------------------------------- yaşam döngüsü
+// ------------------------------------------------------------------ life cycle
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -114,8 +151,17 @@ if (!gotLock) {
 } else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus() } })
   app.whenReady().then(() => {
+    settings = loadSettings()
+    if (DEMO) { createWindow(); return }
+    sessions = new Sessions({ settings, save: saveSettings, secret, emit: send })
+    wire()
     createWindow()
+    sessions.startWatching()
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
   })
-  app.on('window-all-closed', () => { if (rcon) rcon.destroy(); app.quit() })
+  app.on('window-all-closed', () => {
+    if (sessions) sessions.stop()
+    helper.stop()
+    app.quit()
+  })
 }

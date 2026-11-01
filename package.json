@@ -1,16 +1,22 @@
 {
-  "name": "sweaxpanel",
-  "productName": "SweaxPanel",
-  "version": "1.0.0",
-  "description": "Sweax Studios — Minecraft sunucu komuta merkezi (RCON masaüstü paneli)",
+  "name": "sweaxbeacon",
+  "productName": "SweaxBeacon",
+  "version": "2.0.0",
+  "description": "SweaxBeacon: Minecraft Java powers, items and world controls for your server, your LAN world and single-player, with no login.",
   "author": "Sweax Studios",
   "license": "MIT",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "build:helper": "node tools/build-helper.cjs",
     "build:renderer": "vite build",
+    "build:demo": "vite build --mode demo",
+    "icons": "python tools/pixel_icons.py",
     "start": "electron .",
-    "dist": "vite build && electron-builder --win nsis"
+    "test:server": "node tools/test/server-test.cjs",
+    "test:chat": "node tools/test/chat-link-test.cjs",
+    "dist": "node tools/build-helper.cjs && vite build && electron-builder --win nsis",
+    "build:site-app": "vite build --outDir docs/app --emptyOutDir"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -24,8 +30,8 @@
     "ws": "^8.21.3"
   },
   "build": {
-    "appId": "com.sweaxstudios.sweaxpanel",
-    "productName": "SweaxPanel",
+    "appId": "com.sweaxstudios.sweaxbeacon",
+    "productName": "SweaxBeacon",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -46,8 +52,14 @@
       "createStartMenuShortcut": true,
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false,
-      "artifactName": "SweaxPanel-Kurulum-${version}.exe",
-      "shortcutName": "SweaxPanel"
-    }
+      "artifactName": "SweaxBeacon-Kurulum-${version}.exe",
+      "shortcutName": "SweaxBeacon"
+    },
+    "extraResources": [
+      {
+        "from": "native/bin/sweax-helper.exe",
+        "to": "native/sweax-helper.exe"
+      }
+    ]
   }
 }

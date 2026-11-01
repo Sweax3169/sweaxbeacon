@@ -1,155 +1,272 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { api, nextId, clock, parseList, parsePos, parseEffects, GAMEMODE_BY_NUMBER } from './util.js'
+import { RULES, ruleName, rulesStyleFor } from './data/catalog.js'
 import TitleBar from './components/TitleBar.jsx'
-import ConnectScreen from './components/ConnectScreen.jsx'
-import Sidebar from './components/Sidebar.jsx'
-import LogPanel from './components/LogPanel.jsx'
-import { PowersSection, ItemsSection, TeleportSection, WorldSection, PlayersSection, ConsoleSection } from './components/Sections.jsx'
-import { applyTarget, parsePlayers, cleanResponse, nowClock, nextId } from './util.js'
+import Rail from './components/Rail.jsx'
+import Hotbar, { SECTIONS } from './components/Hotbar.jsx'
+import Feed from './components/Feed.jsx'
+import Gate, { GATED } from './components/Gate.jsx'
+import RemoteModal from './components/RemoteModal.jsx'
+import Powers from './sections/Powers.jsx'
+import Items from './sections/Items.jsx'
+import Teleport from './sections/Teleport.jsx'
+import World from './sections/World.jsx'
+import Players from './sections/Players.jsx'
+import Console from './sections/Console.jsx'
+import Settings from './sections/Settings.jsx'
+import CheatsBanner from './components/CheatsBanner.jsx'
 
-const api = () => window.sweax
+const RUN_ERRORS = {
+  'no-window': 'Oyun penceresi bulunamadı.',
+  'pause-off': 'Oyunda F3+P ile "odak kaybında duraklat" ayarını aç.',
+  'not-in-world': 'Önce bir dünyaya gir.',
+  'no-key': 'Oyunda sohbet tuşu klavyede değil.',
+  'no-reply': 'Oyun o an meşguldü; komut gitmedi. Tekrar dene.',
+  'skipped': 'Gönderilmedi.',
+  'closed': 'Bağlantı kapandı.',
+  'timeout': 'Sunucu yanıt vermedi.',
+  'send-failed': 'Oyuna yazılamadı.',
+  'no-target': 'Önce bir dünya seç.',
+  loading: 'Dünya hâlâ yükleniyor; birkaç saniye sonra tekrar dene.',
+}
+export const runError = (code) => RUN_ERRORS[code] || 'Komut gönderilemedi.'
+
+function useTheme(theme) {
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const on = (e) => setSystemDark(e.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  const resolved = theme === 'system' ? (systemDark ? 'obsidian' : 'quartz') : (theme || 'obsidian')
+  useEffect(() => { document.documentElement.dataset.theme = resolved }, [resolved])
+  return resolved
+}
 
 export default function App() {
-  const [view, setView] = useState('connect')
-  const [connecting, setConnecting] = useState(false)
-  const [connectErr, setConnectErr] = useState('')
-  const [form, setForm] = useState({ host: 'localhost', port: '25575', password: '', remember: false })
-  const [info, setInfo] = useState(null)
-  const [target, setTarget] = useState('')
-  const [players, setPlayers] = useState([])
+  const [version, setVersion] = useState('')
+  const [settings, setSettings] = useState({ theme: 'obsidian', waypoints: {} })
+  const [targets, setTargets] = useState([])
+  const [link, setLink] = useState(undefined)
+  const [scanning, setScanning] = useState(true)
   const [section, setSection] = useState('powers')
+  const [who, setWho] = useState(null)
+  const [players, setPlayers] = useState([])
+  const [rcon, setRcon] = useState({})
   const [log, setLog] = useState([])
-  const [toasts, setToasts] = useState([])
-  const targetRef = useRef(target)
-  targetRef.current = target
+  const [feed, setFeed] = useState([])
+  const [busy, setBusy] = useState(0)
+  const [pulse, setPulse] = useState(0)
+  const [modal, setModal] = useState(null)
+  const [pollKick, setPollKick] = useState(0)
+  const theme = useTheme(settings.theme)
 
-  const toast = useCallback((text, kind = 'info') => {
-    const id = nextId()
-    setToasts(t => [...t, { id, text, kind }])
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000)
-  }, [])
-
-  const addLog = useCallback((entry) => {
-    setLog(l => [...l.slice(-200), { id: nextId(), time: nowClock(), ...entry }])
-  }, [])
-
-  // --------------------------- açılış
+  // ---------------------------------------------------------------- wiring
   useEffect(() => {
-    ;(async () => {
-      const s = await api().getSettings()
-      if (s && s.conn) setForm(f => ({ ...f, ...s.conn }))
-      const st = await api().status()
-      if (st && st.connected) { setInfo(st.info); setView('dash'); refreshPlayers() }
-    })()
-    const off = api().onClosed(() => {
-      setView('connect')
-      setInfo(null)
-      toast('Sunucu bağlantısı kesildi.', 'err')
+    let alive = true
+    api().get().then((s) => {
+      if (!alive) return
+      setVersion(s.version)
+      setSettings(s.settings)
+      setTargets(s.targets || [])
+      setLink(s.active || null)
+      setScanning(!!s.scanning)
     })
-    return () => off && off()
+    const offs = [
+      api().onTargets((v) => { setTargets(v.targets || []); setLink(v.active || null); setScanning(!!v.scanning) }),
+      api().onLink((v) => setLink(v || null)),
+    ]
+    const t = setTimeout(() => setScanning(false), 6000)
+    return () => { alive = false; clearTimeout(t); offs.forEach(o => o && o()) }
   }, [])
 
-  // --------------------------- komut çalıştırma
-  const exec = useCallback(async (cmd) => {
-    const res = await api().command(cmd)
+  const mode = link ? link.mode : null
+  const status = link ? link.status : null
+  const target = link ? link.target : null
+  const game = link ? link.game : null
+  const canRun = status === 'ready' || status === 'cheats'
+
+  // A new world: forget the old one's players and state.
+  const linkKey = link ? link.key : null
+  useEffect(() => { setWho(null); setPlayers([]); setRcon({}) }, [linkKey])
+
+  // ---------------------------------------------------------------- who the buttons act on
+  const selector = useMemo(() => {
+    if (who) return who
+    if (mode === 'chat') return '@s'
+    if (players.length === 1) return players[0]
+    return '@a'
+  }, [who, mode, players])
+
+  // ---------------------------------------------------------------- feed + log
+  const pushFeed = useCallback((lines) => {
+    const list = (Array.isArray(lines) ? lines : [lines]).map(l => ({ id: nextId(), ...l }))
+    setFeed(f => [...f, ...list].slice(-4))
+  }, [])
+
+  // ---------------------------------------------------------------- run
+  const run = useCallback(async (label, cmds, opts = {}) => {
+    if (!canRun) { pushFeed({ kind: 'bad', text: link ? 'Bu dünya henüz hazır değil.' : 'Önce bir dünya seç.' }); return null }
+    const list = (typeof cmds === 'function' ? cmds(selector) : cmds).map(c => String(c).replace(/\{t\}/g, selector))
+    if (!list.length) return null
+    const id = nextId()
+    setBusy(b => b + 1)
+    setPulse(p => p + 1)
+    setLog(l => [...l.slice(-300), { id, time: clock(), label, mode, items: list.map(cmd => ({ cmd })), pending: true }])
+    let res
+    try { res = await api().run(list) } catch (e) { res = { ok: false, error: 'send-failed' } }
+    setBusy(b => b - 1)
+    if (!res || !res.ok) {
+      const text = runError(res && res.error)
+      setLog(l => l.map(e => e.id === id ? { ...e, pending: false, error: text } : e))
+      if (!opts.silent) pushFeed({ kind: 'bad', text: `${label}: ${text}` })
+      return res
+    }
+    setLog(l => l.map(e => e.id === id ? { ...e, pending: false, items: res.results } : e))
+    if (!opts.silent) {
+      const lines = []
+      for (const r of res.results) {
+        if (r.error) lines.push({ kind: 'bad', text: runError(r.error) })
+        else if (r.resp) for (const t of r.resp.split('\n').slice(0, 3)) lines.push({ kind: r.ok ? 'ok' : 'bad', text: t })
+      }
+      if (!lines.length) lines.push({ kind: 'ok', text: `${label} ✓` })
+      pushFeed(lines.slice(0, 4))
+    }
+    setPollKick(k => k + 1)
     return res
-  }, [])
+  }, [canRun, selector, mode, link, pushFeed])
 
-  // Sessiz sorgu (durum okuma) — log'a yazmaz
-  const query = useCallback(async (cmd) => {
-    const res = await api().command(cmd)
-    return res && res.ok ? cleanResponse(res.response) : null
-  }, [])
-
-  // Butonların ana çalıştırıcısı
-  const run = useCallback(async (cmds, opts = {}) => {
-    const list = Array.isArray(cmds) ? cmds : [cmds]
-    const needsTarget = list.some(c => c.includes('{t}'))
-    const t = targetRef.current.trim()
-    if (needsTarget && !t) {
-      toast('Önce sol menüden bir hedef oyuncu seç.', 'err')
-      return []
-    }
-    const results = []
-    for (const raw of list) {
-      const cmd = applyTarget(raw, t)
-      const res = await api().command(cmd)
-      const clean = res && res.ok ? cleanResponse(res.response) : (res && res.message) || 'hata'
-      addLog({ cmd, resp: clean, ok: res && res.ok })
-      results.push(res)
-      if (res && !res.ok) toast(res.message || 'Komut çalıştırılamadı.', 'err')
-    }
-    return results
-  }, [addLog, toast])
-
-  const refreshPlayers = useCallback(async () => {
-    const res = await api().command('list')
-    if (res && res.ok) {
-      const names = parsePlayers(cleanResponse(res.response))
+  // ---------------------------------------------------------------- live state over RCON
+  const ruleStyleR = useRef(null)
+  useEffect(() => {
+    if (mode !== 'rcon' || status !== 'ready') return
+    let stop = false
+    const q = (c) => api().query(c)
+    const tick = async () => {
+      if (ruleStyleR.current == null) {
+        const guess = rulesStyleFor(target && target.version)
+        if (guess) ruleStyleR.current = guess
+        else {
+          const r = await q('gamerule keepInventory')
+          ruleStyleR.current = r && /Incorrect argument|Unknown/i.test(r) ? 'snake' : 'camel'
+        }
+      }
+      const list = await q('list')
+      if (stop) return
+      const names = parseList(list || '')
       setPlayers(names)
-      if (!targetRef.current && names.length) setTarget(names[0])
+      const one = who && !who.startsWith('@') ? who : (names.length === 1 ? names[0] : null)
+      const next = { rulesStyle: ruleStyleR.current, online: names.length, one }
+      if (one && (section === 'powers' || section === 'teleport')) {
+        const gm = await q(`data get entity ${one} playerGameType`)
+        const m = /:\s*(\d)\s*$/.exec(gm || '')
+        next.gamemode = m ? GAMEMODE_BY_NUMBER[Number(m[1])] : null
+        next.effects = parseEffects(await q(`data get entity ${one} active_effects`))
+        next.pos = parsePos(await q(`data get entity ${one} Pos`))
+        const dim = await q(`data get entity ${one} Dimension`)
+        const d = /"minecraft:([a-z_]+)"/.exec(dim || '')
+        next.dimension = d ? d[1] : null
+      }
+      if (section === 'world' || !rcon.difficulty) {
+        const tq = await q('time query daytime')
+        const tm = /(\d+)\s*$/.exec(tq || '')
+        next.dayTime = tm ? Number(tm[1]) : null
+        const dq = await q('difficulty')
+        const dm = /(peaceful|easy|normal|hard)/i.exec(dq || '')
+        next.difficulty = dm ? dm[1].toLowerCase() : null
+        if (section === 'world') {
+          const rules = {}
+          for (const r of RULES) {
+            const name = ruleName(r, ruleStyleR.current)
+            const v = await q(`gamerule ${name}`)
+            const vm = /:\s*(\S+)\s*$/.exec(v || '')
+            if (vm) rules[name] = vm[1] === 'true' ? true : vm[1] === 'false' ? false : Number(vm[1])
+          }
+          next.rules = rules
+        }
+      }
+      if (!stop) setRcon(s => ({ ...s, ...next }))
     }
+    tick()
+    const id = setInterval(tick, 4000)
+    return () => { stop = true; clearInterval(id) }
+  }, [mode, status, section, who, linkKey, pollKick])
+  useEffect(() => { ruleStyleR.current = null }, [linkKey])
+
+  // ---------------------------------------------------------------- one picture of the world, whichever link
+  const ws = useMemo(() => {
+    if (mode === 'chat') {
+      const w = game && game.world
+      const p = w && w.player
+      return {
+        gamemode: p ? p.gamemode : null,
+        effects: new Set(p ? p.effects.map(e => e.id) : []),
+        dayTime: w ? w.dayTime : null,
+        weather: w ? (w.thundering ? 'thunder' : w.raining ? 'rain' : 'clear') : null,
+        difficulty: w ? w.difficulty : null,
+        rules: w ? w.rules : null,
+        rulesStyle: w ? w.rulesStyle : rulesStyleFor(target && target.version),
+        pos: p ? p.pos : null,
+        dimension: p ? p.dimension : null,
+        spawn: w ? w.spawn : null,
+        worldName: w ? w.name : null,
+        self: selector === '@s' || (game && selector === game.username),
+      }
+    }
+    if (mode === 'rcon') return { ...rcon, effects: rcon.effects || new Set(), self: !!rcon.one && (selector === rcon.one || selector === '@a' && players.length === 1) }
+    return { effects: new Set() }
+  }, [mode, game, rcon, selector, target, players])
+
+  // ---------------------------------------------------------------- keys 1..7
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target && e.target.tagName) || ''
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.ctrlKey || e.altKey || e.metaKey) return
+      const i = Number(e.key) - 1
+      if (i >= 0 && i < SECTIONS.length) { setSection(SECTIONS[i].key); e.preventDefault() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // --------------------------- bağlan / kes
-  const connect = useCallback(async () => {
-    setConnecting(true)
-    setConnectErr('')
-    const res = await api().connect({ host: form.host.trim(), port: form.port.trim(), password: form.password })
-    setConnecting(false)
-    if (!res.ok) { setConnectErr(res.message || 'Bağlanılamadı.'); return }
-    setInfo({ host: form.host.trim(), port: Number(form.port) || 25575 })
-    const conn = { host: form.host.trim(), port: form.port.trim(), remember: form.remember }
-    if (form.remember) conn.password = form.password
-    api().setSettings({ conn })
-    setView('dash')
-    setLog([])
-    toast('Sunucuya bağlanıldı 🎮', 'ok')
-    refreshPlayers()
-  }, [form, toast, refreshPlayers])
-
-  const disconnect = useCallback(async () => {
-    await api().disconnect()
-    setView('connect')
-    setInfo(null)
-    setPlayers([])
+  const saveSettings = useCallback(async (patch) => {
+    setSettings(s => ({ ...s, ...patch }))
+    const s = await api().setSettings(patch)
+    if (s && s.theme) setSettings(s)
   }, [])
 
-  const sectionProps = { run, query, target, players, refreshPlayers, setTarget, toast, addLog, exec }
+  const gated = link === null || (link && GATED.has(status))
+  const props = { run, ws, mode, status, target, game, link, selector, setWho, players, settings, saveSettings, pushFeed, log, setLog, version, theme, openRemote: () => setModal('remote') }
 
   return (
     <div className="app">
-      <TitleBar connected={view === 'dash'} info={info} />
-      {view === 'connect' ? (
-        <ConnectScreen form={form} setForm={setForm} onConnect={connect} connecting={connecting} error={connectErr} />
-      ) : (
-        <div className="dash">
-          <Sidebar
-            section={section} setSection={setSection}
-            target={target} setTarget={setTarget}
-            players={players} refreshPlayers={refreshPlayers}
-            info={info} onDisconnect={disconnect}
-          />
-          <div className="content">
-            <div className="content-scroll" key={section}>
-              {section === 'powers' && <PowersSection {...sectionProps} />}
-              {section === 'items' && <ItemsSection {...sectionProps} />}
-              {section === 'teleport' && <TeleportSection {...sectionProps} />}
-              {section === 'world' && <WorldSection {...sectionProps} />}
-              {section === 'players' && <PlayersSection {...sectionProps} />}
-              {section === 'console' && <ConsoleSection {...sectionProps} />}
-            </div>
-            <LogPanel log={log} onClear={() => setLog([])} />
+      <TitleBar link={link} targets={targets} scanning={scanning} pulse={pulse} busy={busy > 0} onAddRemote={() => setModal('remote')} />
+      <div className="main">
+        <Rail {...props} who={who} />
+        <div className="stage">
+          <div className="stage-scroll">
+            {link === undefined ? null : gated && section !== 'settings' && section !== 'console' ? (
+              <Gate link={link} targets={targets} scanning={scanning} onAddRemote={() => setModal('remote')} />
+            ) : (
+              <div className="page" key={section}>
+                {status === 'cheats' && section !== 'settings' && <CheatsBanner game={game} />}
+                {section === 'powers' && <Powers {...props} />}
+                {section === 'items' && <Items {...props} />}
+                {section === 'teleport' && <Teleport {...props} />}
+                {section === 'world' && <World {...props} />}
+                {section === 'players' && <Players {...props} />}
+                {section === 'console' && <Console {...props} />}
+                {section === 'settings' && <Settings {...props} targets={targets} />}
+              </div>
+            )}
           </div>
         </div>
-      )}
-      <div className="toasts">
-        {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.kind}`}>
-            <span>{t.kind === 'err' ? '⚠️' : t.kind === 'ok' ? '✅' : '💡'}</span>
-            <div>{t.text}</div>
-          </div>
-        ))}
       </div>
+      <Hotbar section={section} setSection={setSection} busy={busy > 0} mode={mode}>
+        <Feed lines={feed} />
+      </Hotbar>
+      {modal === 'remote' && <RemoteModal onClose={() => setModal(null)} />}
     </div>
   )
 }

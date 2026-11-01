@@ -1,10 +1,10 @@
 'use strict'
 
-// Turns the screencast frames written by capture.cjs into docs/media/demo.mp4
-// and docs/media/demo.gif. Frames arrive only when the screen changes, so each
+// Turns the screencast frames written by capture.cjs into docs/media/<name>.mp4
+// and docs/media/<name>.gif. Frames arrive only when the screen changes, so each
 // one is held for exactly as long as it was on screen (ffmpeg concat durations).
 //
-//   node tools/media/encode-film.cjs [--frames=DIR] [--ffmpeg=PATH]
+//   node tools/media/encode-film.cjs --name=tour [--frames=DIR] [--ffmpeg=PATH]
 
 const fs = require('fs')
 const os = require('os')
@@ -13,10 +13,11 @@ const { spawnSync } = require('child_process')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const arg = (n, d) => { const a = process.argv.find(s => s.startsWith(`--${n}=`)); return a ? a.split('=').slice(1).join('=') : d }
-const FRAMES = path.resolve(arg('frames', path.join(os.tmpdir(), 'sweaxpanel-frames')))
+const NAME = arg('name', 'tour')
+const FRAMES = path.resolve(arg('frames', path.join(os.tmpdir(), 'sweaxbeacon-frames-' + NAME)))
 const FFMPEG = arg('ffmpeg', process.env.FFMPEG || 'C:\\ffmpeg\\bin\\ffmpeg.exe')
 const OUT = path.join(ROOT, 'docs', 'media')
-const GIF_WIDTH = Number(arg('gif-width', 1100))
+const GIF_WIDTH = Number(arg('gif-width', 1000))
 const GIF_FPS = Number(arg('gif-fps', 15))
 
 const stamps = JSON.parse(fs.readFileSync(path.join(FRAMES, 'frames.json'), 'utf8'))
@@ -37,11 +38,11 @@ function ff(args) {
 }
 
 const input = ['-f', 'concat', '-safe', '0', '-i', listFile]
-ff([...input, '-vf', 'fps=30,scale=1360:-2:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', '21',
-  '-pix_fmt', 'yuv420p', '-movflags', '+faststart', path.join(OUT, 'demo.mp4')])
+ff([...input, '-vf', 'fps=30,scale=1320:-2:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', '21',
+  '-pix_fmt', 'yuv420p', '-movflags', '+faststart', path.join(OUT, NAME + '.mp4')])
 ff([...input, '-vf', `fps=${GIF_FPS},scale=${GIF_WIDTH}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=160:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle`,
-  '-loop', '0', path.join(OUT, 'demo.gif')])
+  '-loop', '0', path.join(OUT, NAME + '.gif')])
 
-for (const f of ['demo.mp4', 'demo.gif']) {
+for (const f of [NAME + '.mp4', NAME + '.gif']) {
   console.log(f, (fs.statSync(path.join(OUT, f)).size / 1048576).toFixed(2), 'MB')
 }

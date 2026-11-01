@@ -1,6 +1,6 @@
 # Third-party notices
 
-SweaxPanel is MIT licensed (see [LICENSE](LICENSE)). It is built on, or ships with, the following work by others. Thank you to their authors.
+SweaxBeacon is MIT licensed (see [LICENSE](LICENSE)). It is built on, or ships with, the following work by others. Thank you to their authors.
 
 ## Shipped in the installer
 
@@ -9,36 +9,27 @@ SweaxPanel is MIT licensed (see [LICENSE](LICENSE)). It is built on, or ships wi
 | [Electron](https://github.com/electron/electron) | 33.4 | MIT | Application runtime. Electron includes Chromium and Node.js; their licenses are installed next to the app as `LICENSE.electron.txt` and `LICENSES.chromium.html`. |
 | [React](https://github.com/facebook/react) and React DOM | 18.3.1 | MIT | Interface, bundled into `dist/` |
 | [scheduler](https://github.com/facebook/react/tree/main/packages/scheduler) | 0.23.2 | MIT | Dependency of React DOM, bundled into `dist/` |
+| [Onest](https://github.com/simpals/onest), © 2021 The Onest Project Authors | variable | SIL Open Font License 1.1 | Interface type, bundled into `dist/`. License text: [`src/fonts/OFL-Onest.txt`](src/fonts/OFL-Onest.txt) |
+| [Pixelify Sans](https://github.com/eifetx/Pixelify-Sans), © 2021 The Pixelify Sans Project Authors | variable | SIL Open Font License 1.1 | Numbers, coordinates and commands, bundled into `dist/`. License text: [`src/fonts/OFL-PixelifySans.txt`](src/fonts/OFL-PixelifySans.txt) |
 | [NSIS](https://nsis.sourceforge.io/) (via electron-builder) | | zlib/libpng | The one-click installer and uninstaller |
 
-The app uses the system fonts Segoe UI, Consolas and Segoe UI Emoji that come with Windows. They are not redistributed.
+The font files come from the `@fontsource-variable/onest` (5.3.1) and `@fontsource-variable/pixelify-sans` (5.3.0) packages. The same files are in `docs/fonts/` for the website, and subsets of them are embedded in `docs/art/*.svg`.
 
-## Website and artwork (`docs/`)
+`native/bin/sweax-helper.exe` is compiled from [`native/SweaxHelper.cs`](native/SweaxHelper.cs) in this repository with the C# compiler of .NET Framework 4, which comes with Windows.
 
-| Component | License | Where it is used |
-| --- | --- | --- |
-| [Instrument Sans](https://github.com/Instrument/instrument-sans), © 2022 The Instrument Sans Project Authors | SIL Open Font License 1.1 | `docs/fonts/`, and subsets embedded in `docs/art/*.svg`. License text: [`docs/fonts/OFL-InstrumentSans.txt`](docs/fonts/OFL-InstrumentSans.txt) |
-| [Martian Mono](https://github.com/evilmartians/mono), © 2020 The Martian Mono Project Authors | SIL Open Font License 1.1 | `docs/fonts/`, and subsets embedded in `docs/art/*.svg`. License text: [`docs/fonts/OFL-MartianMono.txt`](docs/fonts/OFL-MartianMono.txt) |
+## Not shipped
 
-The font files were taken from the `@fontsource-variable/instrument-sans` and `@fontsource-variable/martian-mono` packages, version 5.3.0.
+Nothing from Minecraft is included. The pixel icons are drawn by [`tools/pixel_icons.py`](tools/pixel_icons.py). Item names in the player's language are read at run time from the language file their own Minecraft launcher downloaded; the list of item ids in `src/data/items.json` was produced with the data generator of the Minecraft 1.21.11 server (`--reports`).
 
-## Used only to build, not shipped
+Minecraft is a trademark of Mojang Synergies AB. SweaxBeacon is not an official Minecraft product and is not approved by or associated with Mojang or Microsoft.
+
+## Used only to build and test, not shipped
 
 | Component | License | Use |
 | --- | --- | --- |
 | [Vite](https://github.com/vitejs/vite) and [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react) | MIT | Bundling the interface |
 | [electron-builder](https://github.com/electron-userland/electron-builder) | MIT | Building the installer |
-| [sharp](https://github.com/lovell/sharp) | Apache 2.0 | Rendering the app icon (`build/make-icon.mjs`) |
-| [png-to-ico](https://github.com/steambap/png-to-ico) | MIT | Writing `build/icon.ico` |
-| [ws](https://github.com/websockets/ws) | MIT | Listed as a dev dependency; not used by the app or the scripts in this repository |
-| [fontTools](https://github.com/fonttools/fonttools) | MIT | Subsetting fonts for `docs/art` (`tools/art.py`) |
-| [Pillow](https://github.com/python-pillow/Pillow) | MIT-CMU | Resizing the icon for `docs/art` (`tools/art.py`) |
-| [FFmpeg](https://ffmpeg.org/) | LGPL 2.1+ / GPL | Encoding `docs/media/demo.mp4` and `demo.gif` (`tools/media/encode-film.cjs`) |
-
-## Protocol
-
-The RCON client in `electron/rcon.cjs` implements the [Source RCON protocol](https://developer.valvesoftware.com/wiki/Source_RCON_Protocol) published by Valve, which Minecraft Java Edition servers use for remote console access.
-
-## Trademarks
-
-Minecraft is a trademark of Mojang Synergies AB. SweaxPanel is not an official Minecraft product and is not approved by or associated with Mojang or Microsoft. Windows is a trademark of Microsoft Corporation.
+| [sharp](https://github.com/lovell/sharp) and [png-to-ico](https://github.com/steambap/png-to-ico) | Apache-2.0, MIT | Drawing the app icon |
+| [ws](https://github.com/websockets/ws) | MIT | Test scripts |
+| [fontTools](https://github.com/fonttools/fonttools) | MIT | Subsetting fonts into the README artwork |
+| [FFmpeg](https://ffmpeg.org/) | LGPL/GPL | Encoding the demo GIFs and videos |
